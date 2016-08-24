@@ -26,7 +26,7 @@ import time
 import base64
 import re
 import requests
-from requests_oauthlib import OAuth1
+from requests_oauthlib import OAuth1, OAuth2
 import io
 import warnings
 from uuid import uuid4
@@ -129,6 +129,7 @@ class Api(object):
                  consumer_secret=None,
                  access_token_key=None,
                  access_token_secret=None,
+                 application_only_auth=False,
                  input_encoding=None,
                  request_headers=None,
                  cache=DEFAULT_CACHE,
@@ -153,6 +154,9 @@ class Api(object):
           access_token_secret:
             The oAuth access token's secret, also retrieved
             from the get_access_token.py run.
+          application_only_auth:
+             Use Application-Only Auth instead of User Auth.
+             Defaults to False [Optional]
           input_encoding:
             The encoding used to encode input strings. [Optional]
           request_header:
@@ -222,7 +226,8 @@ class Api(object):
 
             raise TwitterError({'message': "Twitter requires oAuth Access Token for all API access"})
 
-        self.SetCredentials(consumer_key, consumer_secret, access_token_key, access_token_secret)
+        self.SetCredentials(consumer_key, consumer_secret, access_token_key, access_token_secret,
+                            application_only_auth)
 
         if debugHTTP:
             import logging
@@ -236,11 +241,33 @@ class Api(object):
             requests_log.setLevel(logging.DEBUG)
             requests_log.propagate = True
 
+    def GetAppOnlyAuthToken(self, consumer_key, consumer_secret):
+      """
+      Generate a Bearer Token from consumer_key and consumer_secret
+      """
+      from urllib import quote_plus
+      import base64
+
+      key = quote_plus(consumer_key)
+      secret = quote_plus(consumer_secret)
+      bearer_token = base64.b64encode('{}:{}'.format(key, secret) )
+
+      post_headers = {
+          'Authorization': 'Basic '+bearer_token,
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+      }
+      res = requests.post(url="https://api.twitter.com/oauth2/token", 
+                          data={'grant_type':'client_credentials'}, 
+                          headers=post_headers)
+      bearer_creds = res.json()
+      return bearer_creds
+
     def SetCredentials(self,
                        consumer_key,
                        consumer_secret,
                        access_token_key=None,
-                       access_token_secret=None):
+                       access_token_secret=None,
+                       application_only_auth=False):
         """Set the consumer_key and consumer_secret for this instance
 
         Args:
@@ -254,17 +281,28 @@ class Api(object):
           access_token_secret:
             The oAuth access token's secret, also retrieved
             from the get_access_token.py run.
+          application_only_auth:
+            Whether to generate a bearer token and use Application-Only Auth
         """
         self._consumer_key = consumer_key
         self._consumer_secret = consumer_secret
         self._access_token_key = access_token_key
         self._access_token_secret = access_token_secret
-        auth_list = [consumer_key, consumer_secret,
-                     access_token_key, access_token_secret]
 
-        if all(auth_list):
-            self.__auth = OAuth1(consumer_key, consumer_secret,
-                                 access_token_key, access_token_secret)
+        if application_only_auth:
+            try:
+                self._bearer_token = self.GetAppOnlyAuthToken(consumer_key, consumer_secret)
+            except:  # TODO: bare Exception here
+                application_only_auth = False
+
+        if application_only_auth and self._bearer_token:
+            self.__auth = OAuth2(token=self._bearer_token)
+        else:
+            auth_list = [consumer_key, consumer_secret,
+                         access_token_key, access_token_secret]
+            if all(auth_list):
+                self.__auth = OAuth1(consumer_key, consumer_secret,
+                                     access_token_key, access_token_secret)
 
         self._config = None
 
@@ -290,6 +328,7 @@ class Api(object):
         self._consumer_secret = None
         self._access_token_key = None
         self._access_token_secret = None
+        self._bearer_token = None
         self.__auth = None  # for request upgrade
 
     def GetSearch(self,
